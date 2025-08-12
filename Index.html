@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Sailtrack MVP – Live Tracker</title>
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    .controls {
+      position: absolute; z-index: 1000; top: 10px; left: 10px;
+      background: rgba(255,255,255,0.95); box-shadow: 0 6px 20px rgba(0,0,0,.15);
+      border-radius: 14px; padding: 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; 
+      display: grid; gap: 8px; width: min(92vw, 340px);
+    }
+    .row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
+    button {
+      border: none; border-radius: 12px; padding: 10px 12px; font-weight: 600; cursor: pointer;
+      background: #111; color: #fff; box-shadow: 0 3px 8px rgba(0,0,0,.2);
+    }
+    button.secondary { background: #f1f1f1; color: #111; }
+    button.warn { background: #d90429; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .metrics { display: grid; gap: 4px; font-size: 14px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; background: #f4f4f5; font-weight: 600; }
+    .hint { font-size: 12px; color: #444; }
+    .toast { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); background: #111; color: #fff; padding: 10px 12px; border-radius: 12px; opacity: 0; transition: opacity .25s; }
+    .toast.show { opacity: 0.95; }
+    .leaflet-marker-icon.profile { border-radius: 100px; border: 2px solid #fff; box-shadow: 0 4px 12px rgba(0,0,0,.25); }
+    .leaflet-control-attribution { font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <div class="row">
+      <button id="startBtn">▶ Start</button>
+      <button id="pauseBtn" class="secondary" disabled>⏸ Pause</button>
+      <button id="centerBtn" class="secondary">🎯 Center</button>
+    </div>
+    <div class="row">
+      <button id="clearBtn" class="secondary">🧹 Clear</button>
+      <button id="exportBtn" class="secondary">⬇️ Export GPX</button>
+      <button id="endBtn" class="warn" disabled>■ End</button>
+    </div>
+    <div class="metrics">
+      <div><span class="badge">Status</span> <span id="status">Idle</span></div>
+      <div><span class="badge">Points</span> <span id="points">0</span> · <span class="badge">Distance</span> <span id="distance">0.00 km</span></div>
+      <div><span class="badge">Speed</span> <span id="speed">–</span> · <span class="badge">Heading</span> <span id="heading">–</span></div>
+      <div class="hint">iPhone tips: use HTTPS, allow location, keep the page in the foreground for best results.</div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- Leaflet JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    // --- Map setup ---
+    const map = L.map('map', { zoomControl: true });
+    const tiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Default view (will auto-fit on first GPS fix)
+    map.setView([0, 0], 2);
+
+    // --- Custom profile icon (inline SVG -> data URL) ---
+    const svg = encodeURIComponent(`
+      <svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'>
+        <defs>
+          <radialGradient id='g' cx='50%' cy='40%' r='50%'>
+            <stop offset='0%' stop-color='#7dd3fc'/>
+            <stop offset='100%' stop-color='#0ea5e9'/>
+          </radialGradient>
+        </defs>
+        <circle cx='32' cy='32' r='31' fill='url(#g)' stroke='white' stroke-width='2'/>
+        <circle cx='32' cy='25' r='10' fill='white'/>
+        <path d='M12 55c4-12 15-16 20-16s16 4 20 16' fill='white'/>
+      </svg>`);
+    const profileIcon = L.icon({
+      iconUrl: `data:image/svg+xml;charset=UTF-8,${svg}`,
+      iconSize: [44, 44],
+      iconAnchor: [22, 22],
+      className: 'profile'
+    });
+
+    let marker = null;
+    let accuracyCircle = null;
+    let polyline = L.polyline([], { color: 'red', weight: 4, opacity: 0.9 }).addTo(map);
+    let path = []; // {lat, lng, t}
+    let metersTotal = 0;
+    let watchId = null;
+    let autoCenter = true;
+    let started = false;
+
+    // --- UI elements ---
+    const statusEl = document.getElementById('status');
+    const pointsEl = document.getElementById('points');
+    const distanceEl = document.getElementById('distance');
+    const speedEl = document.getElementById('speed');
+    const headingEl = document.getElementById('heading');
+    const toastEl = document.getElementById('toast');
+
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const centerBtn = document.getElementById('centerBtn');
+    const exportBtn = document.getElementById('exportBtn');
+    const endBtn = document.getElementById('endBtn');
+
+    function toast(msg) {
+      toastEl.textContent = msg; toastEl.classList.add('show');
+      setTimeout(() => toastEl.classList.remove('show'), 2000);
+    }
+
+    function kmFormat(meters) {
+      return (meters / 1000).toFixed(2) + ' km';
+    }
+
+    function knotsFromMps(v) { return (v * 1.943844).toFixed(1) + ' kn'; }
+
+    function bearingToCardinal(bearing) {
+      if (bearing == null || isNaN(bearing)) return '–';
+      const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+      const idx = Math.round(bearing / 22.5) % 16; return `${dirs[idx]} (${Math.round(bearing)}°)`;
+    }
+
+    function addPoint(lat, lng, t) {
+      const last = path[path.length - 1];
+      if (last) {
+        // ignore tiny jitter under ~3m
+        const d = map.distance([last.lat, last.lng], [lat, lng]);
+        if (d < 3) return; // filter GPS noise
+        metersTotal += d;
+      }
+      path.push({ lat, lng, t });
+      polyline.addLatLng([lat, lng]);
+      pointsEl.textContent = path.length;
+      distanceEl.textContent = kmFormat(metersTotal);
+    }
+
+    function onPosition(pos) {
+      const { latitude: lat, longitude: lng, accuracy, speed, heading } = pos.coords;
+      const t = pos.timestamp;
+
+      if (!marker) {
+        marker = L.marker([lat, lng], { icon: profileIcon }).addTo(map);
+      } else {
+        marker.setLatLng([lat, lng]);
+      }
+
+      if (!accuracyCircle) {
+        accuracyCircle = L.circle([lat, lng], { radius: accuracy || 10, color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.15 });
+        accuracyCircle.addTo(map);
+      } else {
+        accuracyCircle.setLatLng([lat, lng]).setRadius(accuracy || 10);
+      }
+
+      addPoint(lat, lng, t);
+
+      // Update metrics
+      speedEl.textContent = speed != null && !Number.isNaN(speed) ? knotsFromMps(speed) : '–';
+      headingEl.textContent = bearingToCardinal(heading);
+      statusEl.textContent = 'Tracking';
+
+      // Keep view on boat
+      if (autoCenter) {
+        if (path.length === 1) {
+          map.setView([lat, lng], 16);
+        } else {
+          map.panTo([lat, lng], { animate: true });
+        }
+      }
+    }
+
+    function onError(err) {
+      console.warn('Geolocation error:', err);
+      statusEl.textContent = 'Error';
+      toast(err.message || 'Location error');
+      if (err.code === 1) {
+        toast('Location permission denied. Enable it in Settings > Safari > Location.');
+      }
+    }
+
+    function startTracking() {
+      if (!('geolocation' in navigator)) {
+        toast('Geolocation not supported in this browser.');
+        return;
+      }
+      if (watchId != null) return; // already running
+      started = true;
+      statusEl.textContent = 'Requesting permission…';
+      watchId = navigator.geolocation.watchPosition(onPosition, onError, {
+        enableHighAccuracy: true,
+        maximumAge: 1000,
+        timeout: 10000
+      });
+      startBtn.disabled = true;
+      pauseBtn.disabled = false;
+      endBtn.disabled = false;
+      toast('Tracking started');
+    }
+
+    function pauseTracking() {
+      if (watchId != null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+        statusEl.textContent = 'Paused';
+        startBtn.disabled = false;
+        pauseBtn.disabled = true;
+        toast('Tracking paused');
+      }
+    }
+
+    function endTracking() {
+      if (watchId != null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      statusEl.textContent = 'Ended';
+      startBtn.disabled = true;
+      pauseBtn.disabled = true;
+      endBtn.disabled = true;
+      toast('Tracking ended');
+    }
+
+    function clearTrack() {
+      path = [];
+      metersTotal = 0;
+      polyline.setLatLngs([]);
+      pointsEl.textContent = '0';
+      distanceEl.textContent = kmFormat(0);
+      if (marker) { /* keep marker, just reset line */ }
+      statusEl.textContent = started ? 'Tracking' : 'Idle';
+      toast('Track cleared');
+    }
+
+    centerBtn.addEventListener('click', () => {
+      autoCenter = !autoCenter;
+      centerBtn.textContent = autoCenter ? '🎯 Center' : '🧭 Free Pan';
+      if (autoCenter && path.length) {
+        const last = path[path.length - 1];
+        map.panTo([last.lat, last.lng]);
+      }
+    });
+
+    startBtn.addEventListener('click', startTracking);
+    pauseBtn.addEventListener('click', pauseTracking);
+    clearBtn.addEventListener('click', clearTrack);
+    endBtn.addEventListener('click', endTracking);
+
+    // --- Simple GPX export ---
+    function toGPX(trk) {
+      const esc = s => s.toString();
+      const gpxPts = trk.map(p => `<trkpt lat="${esc(p.lat)}" lon="${esc(p.lng)}"><time>${new Date(p.t).toISOString()}</time></trkpt>`).join('');
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Sailtrack MVP" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk>\n    <name>Sailtrack Session</name>\n    <trkseg>\n      ${gpxPts}\n    </trkseg>\n  </trk>\n</gpx>`;
+    }
+
+    exportBtn.addEventListener('click', () => {
+      if (!path.length) { toast('No points to export yet'); return; }
+      const blob = new Blob([toGPX(path)], { type: 'application/gpx+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'sailtrack.gpx'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // Nice: tap map to toggle center
+    map.on('click', () => centerBtn.click());
+
+    // Proactive iOS nudge
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+      toast('For iPhone GPS, host this page over HTTPS.');
+    }
+  </script>
+</body>
+</html>
