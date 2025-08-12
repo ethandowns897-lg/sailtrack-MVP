@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Sailtrack MVP – Live Tracker</title>
+  <title>Sailtrack MVP – Live Tracker (v3 – Multi‑Boat)</title>
   <!-- Leaflet CSS -->
   <link
     rel="stylesheet"
@@ -12,28 +12,39 @@
     crossorigin=""
   />
   <style>
-    html, body, #map { height: 100%; margin: 0; }
+    :root{
+      --bg:#ffffff;--panel:#ffffff;--text:#0a0a0a;--muted:#444;--accent:#111;--soft:#f4f4f5;--warn:#d90429;
+      --trail:#ef4444;--circle:#2563eb;--circleFill:#3b82f6;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{--bg:#0b0b0b;--panel:#121212;--text:#f8fafc;--muted:#9aa0a6;--accent:#e5e7eb;--soft:#1e1f22;}
+    }
+    html, body, #map { height: 100%; margin: 0; background: var(--bg); color: var(--text); }
     .controls {
       position: absolute; z-index: 1000; top: 10px; left: 10px;
-      background: rgba(255,255,255,0.95); box-shadow: 0 6px 20px rgba(0,0,0,.15);
+      background: var(--panel); box-shadow: 0 6px 20px rgba(0,0,0,.25);
       border-radius: 14px; padding: 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; 
-      display: grid; gap: 8px; width: min(92vw, 340px);
+      display: grid; gap: 8px; width: min(92vw, 360px);
     }
     .row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
     button {
       border: none; border-radius: 12px; padding: 10px 12px; font-weight: 600; cursor: pointer;
-      background: #111; color: #fff; box-shadow: 0 3px 8px rgba(0,0,0,.2);
+      background: var(--accent); color: var(--bg); box-shadow: 0 3px 8px rgba(0,0,0,.2);
     }
-    button.secondary { background: #f1f1f1; color: #111; }
-    button.warn { background: #d90429; }
+    button.secondary { background: var(--soft); color: var(--text); }
+    button.warn { background: var(--warn); color: #fff; }
     button:disabled { opacity: .6; cursor: not-allowed; }
     .metrics { display: grid; gap: 4px; font-size: 14px; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; background: #f4f4f5; font-weight: 600; }
-    .hint { font-size: 12px; color: #444; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; background: var(--soft); font-weight: 600; }
+    .hint { font-size: 12px; color: var(--muted); }
     .toast { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); background: #111; color: #fff; padding: 10px 12px; border-radius: 12px; opacity: 0; transition: opacity .25s; }
     .toast.show { opacity: 0.95; }
     .leaflet-marker-icon.profile { border-radius: 100px; border: 2px solid #fff; box-shadow: 0 4px 12px rgba(0,0,0,.25); }
     .leaflet-control-attribution { font-size: 11px; }
+    .sectionTitle{font-size:12px; font-weight:700; opacity:.85; margin-top:4px}
+    input[type="range"]{ width:100%; }
+    label.switch{display:flex; align-items:center; gap:8px; font-size:13px}
+    .pill{padding:2px 8px;border-radius:999px;background:var(--soft)}
   </style>
 </head>
 <body>
@@ -51,11 +62,29 @@
       <button id="exportBtn" class="secondary">⬇️ Export GPX</button>
       <button id="endBtn" class="warn" disabled>■ End</button>
     </div>
+
+    <div class="sectionTitle">Tracking settings</div>
+    <label class="switch"><input id="batteryMode" type="checkbox"> Battery saver</label>
+    <label class="switch"><input id="darkToggle" type="checkbox"> Dark mode</label>
+    <label>Sampling interval: <span class="pill" id="sampleLabel">1 s</span>
+      <input id="sampleInput" type="range" min="1" max="10" step="1" value="1" />
+    </label>
+    <label>Accuracy filter: <span class="pill" id="accLabel">≤ 25 m</span>
+      <input id="accInput" type="range" min="5" max="100" step="5" value="25" />
+    </label>
+
+    <div class="sectionTitle">Racing tools</div>
+    <div class="row">
+      <button id="dropMarkBtn" class="secondary">📍 Drop mark</button>
+      <button id="clearMarksBtn" class="secondary">🗑️ Clear marks</button>
+    </div>
+
     <div class="metrics">
       <div><span class="badge">Status</span> <span id="status">Idle</span></div>
       <div><span class="badge">Points</span> <span id="points">0</span> · <span class="badge">Distance</span> <span id="distance">0.00 km</span></div>
       <div><span class="badge">Speed</span> <span id="speed">–</span> · <span class="badge">Heading</span> <span id="heading">–</span></div>
-      <div class="hint">iPhone tips: use HTTPS, allow location, keep the page in the foreground for best results.</div>
+      <div id="vmgRow" style="display:none"><span class="badge">VMG→Mark</span> <span id="vmg">–</span> · <span class="badge">Range</span> <span id="range">–</span></div>
+      <div class="hint">Use HTTPS, allow location, keep the page in foreground. Enable Battery saver to reduce updates.</div>
     </div>
   </div>
 
@@ -67,18 +96,57 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
   ></script>
+
+  <!-- ✅ Firebase (CDN) – expose to window for the non-module script below. Replace the config values! -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+    import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-database.js";
+
+    const firebaseConfig = {
+  apiKey: "AIzaSyDrnpDbQCW2nSPd-w-TeF3EUrdfNYIymn4",
+  authDomain: "sailtrack-mvp.firebaseapp.com",
+  projectId: "sailtrack-mvp",
+  storageBucket: "sailtrack-mvp.firebasestorage.app",
+  messagingSenderId: "609606496793",
+  appId: "1:609606496793:web:6863a6c55d6d42a4c73088"
+};
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    // Expose to window so the plain JS below can use it
+    window.firebaseDb = db;
+    window.firebaseRef = ref;
+    window.firebaseSet = set;
+    window.firebaseOnValue = onValue;
+  </script>
+
   <script>
+    // --- PWA (installable) in one file: manifest + service worker via Blob ---
+    (function(){
+      const manifest = { name: 'Sailtrack MVP', short_name: 'Sailtrack', start_url: '.', display: 'standalone', background_color:'#0b0b0b', theme_color:'#0b0b0b', icons: [] };
+      const link = document.createElement('link');
+      link.rel = 'manifest';
+      link.href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], {type:'application/json'}));
+      document.head.appendChild(link);
+      const swCode = `self.addEventListener('install', e=>{self.skipWaiting(); e.waitUntil(caches.open('st-v1').then(c=>c.addAll(['./'])))}); self.addEventListener('fetch', e=>{e.respondWith(fetch(e.request).catch(()=>caches.match('./')))});`;
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register(URL.createObjectURL(new Blob([swCode], {type:'text/javascript'})));
+      }
+    })();
+
+    // Wake Lock to keep screen on
+    let wakeLock = null;
+    async function requestWakeLock(){ try{ if('wakeLock' in navigator){ wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', ()=>console.log('WakeLock released')); } }catch(e){ console.log('WakeLock error', e); } }
+
     // --- Map setup ---
     const map = L.map('map', { zoomControl: true });
     const tiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
-
-    // Default view (will auto-fit on first GPS fix)
     map.setView([0, 0], 2);
 
-    // --- Custom profile icon (inline SVG -> data URL) ---
+    // Profile icon
     const svg = encodeURIComponent(`
       <svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'>
         <defs>
@@ -91,29 +159,33 @@
         <circle cx='32' cy='25' r='10' fill='white'/>
         <path d='M12 55c4-12 15-16 20-16s16 4 20 16' fill='white'/>
       </svg>`);
-    const profileIcon = L.icon({
-      iconUrl: `data:image/svg+xml;charset=UTF-8,${svg}`,
-      iconSize: [44, 44],
-      iconAnchor: [22, 22],
-      className: 'profile'
-    });
+    const profileIcon = L.icon({ iconUrl: `data:image/svg+xml;charset=UTF-8,${svg}`, iconSize: [44, 44], iconAnchor: [22, 22], className: 'profile' });
 
-    let marker = null;
-    let accuracyCircle = null;
-    let polyline = L.polyline([], { color: 'red', weight: 4, opacity: 0.9 }).addTo(map);
-    let path = []; // {lat, lng, t}
+    let marker = null, accuracyCircle = null;
+    let polyline = L.polyline([], { color: getComputedStyle(document.documentElement).getPropertyValue('--trail').trim() || 'red', weight: 4, opacity: 0.9 }).addTo(map);
+    let path = []; // {lat, lng, t, spd, hdg}
     let metersTotal = 0;
     let watchId = null;
     let autoCenter = true;
     let started = false;
 
-    // --- UI elements ---
+    // 🚤 Multi-boat state
+    const otherBoats = {}; // name -> { marker, path }
+    function colorForName(name){ let h=0; for(let i=0;i<name.length;i++){ h=(h<<5)-h+name.charCodeAt(i); h|=0; } const hue=Math.abs(h)%360; return `hsl(${hue} 90% 50%)`; }
+
+    // Boat identity
+    const boatName = prompt('Enter your boat name/number:') || ('Boat-' + Math.floor(Math.random()*1000));
+
+    // UI
     const statusEl = document.getElementById('status');
     const pointsEl = document.getElementById('points');
     const distanceEl = document.getElementById('distance');
     const speedEl = document.getElementById('speed');
     const headingEl = document.getElementById('heading');
     const toastEl = document.getElementById('toast');
+    const vmgRow = document.getElementById('vmgRow');
+    const vmgEl = document.getElementById('vmg');
+    const rangeEl = document.getElementById('range');
 
     const startBtn = document.getElementById('startBtn');
     const pauseBtn = document.getElementById('pauseBtn');
@@ -122,170 +194,213 @@
     const exportBtn = document.getElementById('exportBtn');
     const endBtn = document.getElementById('endBtn');
 
-    function toast(msg) {
-      toastEl.textContent = msg; toastEl.classList.add('show');
-      setTimeout(() => toastEl.classList.remove('show'), 2000);
-    }
+    const sampleInput = document.getElementById('sampleInput');
+    const sampleLabel = document.getElementById('sampleLabel');
+    const accInput = document.getElementById('accInput');
+    const accLabel = document.getElementById('accLabel');
+    const batteryMode = document.getElementById('batteryMode');
+    const darkToggle = document.getElementById('darkToggle');
 
-    function kmFormat(meters) {
-      return (meters / 1000).toFixed(2) + ' km';
-    }
+    const dropMarkBtn = document.getElementById('dropMarkBtn');
+    const clearMarksBtn = document.getElementById('clearMarksBtn');
+    let marks = []; // Leaflet markers
 
+    function toast(msg) { toastEl.textContent = msg; toastEl.classList.add('show'); setTimeout(() => toastEl.classList.remove('show'), 1800); }
+    function kmFormat(m) { return (m/1000).toFixed(2) + ' km'; }
     function knotsFromMps(v) { return (v * 1.943844).toFixed(1) + ' kn'; }
+    function bearingToCardinal(b) { if (b==null || isNaN(b)) return '–'; const dirs=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW']; const idx=Math.round(b/22.5)%16; return `${dirs[idx]} (${Math.round(b)}°)`; }
 
-    function bearingToCardinal(bearing) {
-      if (bearing == null || isNaN(bearing)) return '–';
-      const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
-      const idx = Math.round(bearing / 22.5) % 16; return `${dirs[idx]} (${Math.round(bearing)}°)`;
-    }
+    // Simple smoothing using running average (last N points)
+    function smoothHeading(raw){ const N=5; const pts=path.slice(-N); if(pts.length<2) return raw; const angs=pts.map(p=>p.hdg).filter(x=>typeof x==='number'); if(!angs.length) return raw; const s=angs.reduce((a,b)=>a+b,0)/angs.length; return s; }
+    function smoothSpeed(raw){ const N=5; const pts=path.slice(-N); if(pts.length<2) return raw; const sp=pts.map(p=>p.spd).filter(x=>typeof x==='number'); if(!sp.length) return raw; return sp.reduce((a,b)=>a+b,0)/sp.length; }
 
-    function addPoint(lat, lng, t) {
+    // Haversine helper via Leaflet
+    function distance(a,b){ return map.distance(a,b); }
+
+    function addPoint(lat, lng, t, spd, hdg) {
       const last = path[path.length - 1];
       if (last) {
-        // ignore tiny jitter under ~3m
-        const d = map.distance([last.lat, last.lng], [lat, lng]);
-        if (d < 3) return; // filter GPS noise
+        const d = distance([last.lat, last.lng], [lat, lng]);
+        if (d < 3) return; // filter jitter <3m
         metersTotal += d;
       }
-      path.push({ lat, lng, t });
+      const smSpd = smoothSpeed(spd ?? null);
+      const smHdg = smoothHeading(hdg ?? null);
+      const rec = { lat, lng, t, spd: spd ?? null, hdg: hdg ?? null };
+      path.push(rec);
       polyline.addLatLng([lat, lng]);
       pointsEl.textContent = path.length;
       distanceEl.textContent = kmFormat(metersTotal);
+      speedEl.textContent = (smSpd!=null && !Number.isNaN(smSpd)) ? knotsFromMps(smSpd) : '–';
+      headingEl.textContent = bearingToCardinal(smHdg);
+      updateVMG();
     }
 
     function onPosition(pos) {
       const { latitude: lat, longitude: lng, accuracy, speed, heading } = pos.coords;
       const t = pos.timestamp;
 
-      if (!marker) {
-        marker = L.marker([lat, lng], { icon: profileIcon }).addTo(map);
-      } else {
-        marker.setLatLng([lat, lng]);
-      }
+      // accuracy filter
+      const accLimit = Number(accInput.value);
+      if (accuracy && accuracy > accLimit) { return; }
+
+      if (!marker) { marker = L.marker([lat, lng], { icon: profileIcon }).addTo(map); }
+      else { marker.setLatLng([lat, lng]); }
 
       if (!accuracyCircle) {
-        accuracyCircle = L.circle([lat, lng], { radius: accuracy || 10, color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.15 });
+        accuracyCircle = L.circle([lat, lng], { radius: accuracy || 10, color: getCSS('--circle'), fillColor: getCSS('--circleFill'), fillOpacity: 0.15 });
         accuracyCircle.addTo(map);
-      } else {
-        accuracyCircle.setLatLng([lat, lng]).setRadius(accuracy || 10);
-      }
+      } else { accuracyCircle.setLatLng([lat, lng]).setRadius(accuracy || 10); }
 
-      addPoint(lat, lng, t);
+      addPoint(lat, lng, t, speed, heading);
 
-      // Update metrics
-      speedEl.textContent = speed != null && !Number.isNaN(speed) ? knotsFromMps(speed) : '–';
-      headingEl.textContent = bearingToCardinal(heading);
       statusEl.textContent = 'Tracking';
+      if (autoCenter) { path.length===1 ? map.setView([lat,lng], 16) : map.panTo([lat,lng], {animate:true}); }
 
-      // Keep view on boat
-      if (autoCenter) {
-        if (path.length === 1) {
-          map.setView([lat, lng], 16);
-        } else {
-          map.panTo([lat, lng], { animate: true });
-        }
+      // 🔴 Push my live position to Firebase
+      if (window.firebaseDb) {
+        window.firebaseSet(window.firebaseRef(window.firebaseDb, 'boats/' + boatName), { lat, lng, t: Date.now() });
       }
     }
+
+    function getCSS(varName){ return getComputedStyle(document.documentElement).getPropertyValue(varName).trim(); }
 
     function onError(err) {
-      console.warn('Geolocation error:', err);
-      statusEl.textContent = 'Error';
-      toast(err.message || 'Location error');
-      if (err.code === 1) {
-        toast('Location permission denied. Enable it in Settings > Safari > Location.');
-      }
+      console.warn('Geolocation error:', err); statusEl.textContent = 'Error'; toast(err.message || 'Location error');
+      if (err.code === 1) toast('Enable: Settings > Safari > Location');
     }
 
+    // Sampling management
+    let throttleTimer = 0; // basic throttle by time interval
     function startTracking() {
-      if (!('geolocation' in navigator)) {
-        toast('Geolocation not supported in this browser.');
-        return;
-      }
-      if (watchId != null) return; // already running
-      started = true;
-      statusEl.textContent = 'Requesting permission…';
-      watchId = navigator.geolocation.watchPosition(onPosition, onError, {
-        enableHighAccuracy: true,
-        maximumAge: 1000,
+      if (!('geolocation' in navigator)) { toast('Geolocation not supported'); return; }
+      if (watchId != null) return;
+      started = true; statusEl.textContent = 'Requesting permission…';
+      requestWakeLock();
+      const intervalMs = Number(sampleInput.value) * 1000;
+      throttleTimer = Date.now();
+      watchId = navigator.geolocation.watchPosition((pos)=>{
+        const now = Date.now();
+        if (now - throttleTimer < intervalMs) return; // throttle updates
+        throttleTimer = now;
+        onPosition(pos);
+      }, onError, {
+        enableHighAccuracy: !batteryMode.checked,
+        maximumAge: batteryMode.checked ? 5000 : 1000,
         timeout: 10000
       });
-      startBtn.disabled = true;
-      pauseBtn.disabled = false;
-      endBtn.disabled = false;
-      toast('Tracking started');
+      startBtn.disabled = true; pauseBtn.disabled = false; endBtn.disabled = false; toast('Tracking started');
     }
 
     function pauseTracking() {
-      if (watchId != null) {
-        navigator.geolocation.clearWatch(watchId);
-        watchId = null;
-        statusEl.textContent = 'Paused';
-        startBtn.disabled = false;
-        pauseBtn.disabled = true;
-        toast('Tracking paused');
-      }
+      if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; statusEl.textContent = 'Paused'; startBtn.disabled = false; pauseBtn.disabled = true; toast('Paused'); }
     }
 
     function endTracking() {
-      if (watchId != null) {
-        navigator.geolocation.clearWatch(watchId);
-        watchId = null;
-      }
-      statusEl.textContent = 'Ended';
-      startBtn.disabled = true;
-      pauseBtn.disabled = true;
-      endBtn.disabled = true;
-      toast('Tracking ended');
+      if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+      if (wakeLock) { wakeLock.release(); wakeLock = null; }
+      statusEl.textContent = 'Ended'; startBtn.disabled = true; pauseBtn.disabled = true; endBtn.disabled = true; toast('Ended');
     }
 
     function clearTrack() {
-      path = [];
-      metersTotal = 0;
-      polyline.setLatLngs([]);
-      pointsEl.textContent = '0';
-      distanceEl.textContent = kmFormat(0);
-      if (marker) { /* keep marker, just reset line */ }
-      statusEl.textContent = started ? 'Tracking' : 'Idle';
-      toast('Track cleared');
+      path = []; metersTotal = 0; polyline.setLatLngs([]); pointsEl.textContent = '0'; distanceEl.textContent = kmFormat(0); statusEl.textContent = started ? 'Tracking' : 'Idle'; toast('Track cleared');
     }
 
-    centerBtn.addEventListener('click', () => {
-      autoCenter = !autoCenter;
-      centerBtn.textContent = autoCenter ? '🎯 Center' : '🧭 Free Pan';
-      if (autoCenter && path.length) {
-        const last = path[path.length - 1];
-        map.panTo([last.lat, last.lng]);
-      }
-    });
-
+    centerBtn.addEventListener('click', () => { autoCenter = !autoCenter; centerBtn.textContent = autoCenter ? '🎯 Center' : '🧭 Free Pan'; if (autoCenter && path.length) { const last = path[path.length-1]; map.panTo([last.lat, last.lng]); } });
     startBtn.addEventListener('click', startTracking);
     pauseBtn.addEventListener('click', pauseTracking);
     clearBtn.addEventListener('click', clearTrack);
     endBtn.addEventListener('click', endTracking);
 
+    // Labels for sliders
+    sampleInput.addEventListener('input', ()=> sampleLabel.textContent = `${sampleInput.value} s`);
+    accInput.addEventListener('input', ()=> accLabel.textContent = `≤ ${accInput.value} m`);
+
+    // Dark mode toggle
+    darkToggle.addEventListener('change', ()=>{ document.documentElement.style.colorScheme = darkToggle.checked? 'dark':'light'; });
+
+    // Marks + VMG
+    function dropMark(latlng){
+      const m = L.marker(latlng, { draggable: true }).addTo(map).bindPopup('Race mark');
+      m.on('dragend', updateVMG); marks.push(m); vmgRow.style.display = 'block'; updateVMG(); toast('Mark placed');
+    }
+    dropMarkBtn.addEventListener('click', ()=>{
+      const last = path[path.length-1];
+      if (last) dropMark([last.lat, last.lng]); else { toast('Move a bit first'); }
+    });
+    clearMarksBtn.addEventListener('click', ()=>{ marks.forEach(m=>m.remove()); marks = []; vmgRow.style.display = 'none'; });
+
+    function bearing(a,b){
+      const toRad = x=>x*Math.PI/180, toDeg = x=>x*180/Math.PI;
+      const φ1=toRad(a.lat), φ2=toRad(b.lat), λ1=toRad(a.lng), λ2=toRad(b.lng);
+      const y = Math.sin(λ2-λ1)*Math.cos(φ2); const x = Math.cos(φ1)*sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(λ2-λ1); return (toDeg(Math.atan2(y,x))+360)%360;
+    }
+
+    function updateVMG(){
+      if (!marks.length || !path.length) return;
+      const me = path[path.length-1]; const tgt = marks[0].getLatLng();
+      const rng = distance([me.lat, me.lng], [tgt.lat, tgt.lng]);
+      const brg = (function(a,b){
+        const toRad = x=>x*Math.PI/180, toDeg = x=>x*180/Math.PI;
+        const φ1=toRad(a.lat), φ2=toRad(b.lat), λ1=toRad(a.lng), λ2=toRad(b.lng);
+        const y = Math.sin(λ2-λ1)*Math.cos(φ2); const x = Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(λ2-λ1); return (toDeg(Math.atan2(y,x))+360)%360;
+      })({lat:me.lat,lng:me.lng},{lat:tgt.lat,lng:tgt.lng});
+      const spd = smoothSpeed(me.spd ?? null) || 0; // m/s
+      const hdg = smoothHeading(me.hdg ?? null) || 0; // deg
+      const angle = Math.abs(((brg - hdg + 540) % 360) - 180) * (Math.PI/180);
+      const vmg = spd * Math.cos(angle); // m/s toward the mark
+      vmgEl.textContent = `${(vmg*1.943844).toFixed(1)} kn`;
+      rangeEl.textContent = `${(rng/1852).toFixed(2)} NM`;
+    }
+
     // --- Simple GPX export ---
     function toGPX(trk) {
       const esc = s => s.toString();
       const gpxPts = trk.map(p => `<trkpt lat="${esc(p.lat)}" lon="${esc(p.lng)}"><time>${new Date(p.t).toISOString()}</time></trkpt>`).join('');
-      return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Sailtrack MVP" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk>\n    <name>Sailtrack Session</name>\n    <trkseg>\n      ${gpxPts}\n    </trkseg>\n  </trk>\n</gpx>`;
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Sailtrack MVP" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Sailtrack Session</name>
+    <trkseg>
+      ${gpxPts}
+    </trkseg>
+  </trk>
+</gpx>`;
     }
-
     exportBtn.addEventListener('click', () => {
       if (!path.length) { toast('No points to export yet'); return; }
       const blob = new Blob([toGPX(path)], { type: 'application/gpx+xml' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'sailtrack.gpx'; a.click();
-      URL.revokeObjectURL(url);
+      const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'sailtrack.gpx'; a.click(); URL.revokeObjectURL(url);
     });
 
-    // Nice: tap map to toggle center
+    // Map tap toggles center
     map.on('click', () => centerBtn.click());
 
-    // Proactive iOS nudge
-    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-      toast('For iPhone GPS, host this page over HTTPS.');
+    // HTTPS nudge for iOS
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost') { toast('For iPhone GPS, host over HTTPS.'); }
+
+    // ✅ Listen to all boats from Firebase and draw them
+    if (window.firebaseDb) {
+      window.firebaseOnValue(window.firebaseRef(window.firebaseDb, 'boats'), (snapshot)=>{
+        const data = snapshot.val() || {};
+        for (const [name, boat] of Object.entries(data)) {
+          if (!boat || typeof boat.lat !== 'number' || typeof boat.lng !== 'number') continue;
+          if (name === boatName) continue; // skip my own (already drawn)
+          const latlng = [boat.lat, boat.lng];
+          const col = colorForName(name);
+          if (!otherBoats[name]) {
+            otherBoats[name] = {
+              marker: L.circleMarker(latlng, { radius: 6, color: col, weight: 3, fillOpacity: 1 }).addTo(map).bindTooltip(name, {permanent:true, offset:[8,0]}),
+              path: L.polyline([latlng], { color: col, weight: 3, opacity: 0.85 }).addTo(map)
+            };
+          } else {
+            otherBoats[name].marker.setLatLng(latlng);
+            otherBoats[name].path.addLatLng(latlng);
+          }
+        }
+      });
     }
   </script>
 </body>
 </html>
+
