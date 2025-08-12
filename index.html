@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Sailtrack MVP – Live Tracker (v3.1 – Multi‑Boat + Mobile)</title>
+  <title>Sailtrack MVP – Live Tracker (v3.1 – Multi-Boat + Mobile)</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     :root{
@@ -15,18 +15,18 @@
     }
     html, body, #map { height: 100%; margin: 0; background: var(--bg); color: var(--text); }
 
-    /* Controls panel becomes a bottom sheet on phones */
+    /* Controls -> bottom sheet on phones */
     .controls {
       position: absolute; z-index: 1000; top: 10px; left: 10px;
       background: var(--panel); box-shadow: 0 6px 20px rgba(0,0,0,.25);
-      border-radius: 14px; padding: 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; 
+      border-radius: 14px; padding: 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
       display: grid; gap: 8px; width: min(92vw, 360px);
-      max-height: 80vh; overflow:auto;
+      max-height: 80vh; overflow: auto;
     }
     @media (max-width: 600px){
       .controls { left: 50%; transform: translateX(-50%); bottom: 12px; top: auto; width: 95vw; max-height: 45vh; border-radius: 16px; }
       body.controls-collapsed .controls{ display:none; }
-      .fab { display:block; }
+      .fab { display:flex; }
     }
 
     .row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
@@ -47,7 +47,9 @@
     .pill{padding:2px 8px;border-radius:999px;background:var(--soft)}
 
     /* Floating action button to toggle controls on mobile */
-    .fab{ position: absolute; z-index:1001; right: 14px; bottom: 14px; width: 56px; height: 56px; border-radius: 50%; display:none; align-items:center; justify-content:center; font-size:22px; background:#111; color:#fff; box-shadow:0 10px 24px rgba(0,0,0,.25); }
+    .fab{ position: absolute; z-index:1001; right: 14px; bottom: 14px; width: 56px; height: 56px;
+      border-radius: 50%; display:none; align-items:center; justify-content:center; font-size:22px;
+      background:#111; color:#fff; box-shadow:0 10px 24px rgba(0,0,0,.25); }
   </style>
 </head>
 <body class="controls-collapsed">
@@ -182,7 +184,14 @@
       if(!accuracyCircle){ accuracyCircle=L.circle([lat,lng],{ radius:accuracy||10, color:getCSS('--circle'), fillColor:getCSS('--circleFill'), fillOpacity:0.15 }).addTo(map); } else { accuracyCircle.setLatLng([lat,lng]).setRadius(accuracy||10); }
       addPoint(lat,lng,t,speed,heading);
       statusEl.textContent='Tracking'; if(autoCenter){ path.length===1?map.setView([lat,lng],16):map.panTo([lat,lng],{animate:true}); }
-      if(window.firebaseDb){ window.firebaseSet(window.firebaseRef(window.firebaseDb, `rooms/${room}/boats/${boatName}`), { lat,lng,t:Date.now() }); }
+
+      // write position into the room
+      if(window.firebaseDb){
+        window.firebaseSet(
+          window.firebaseRef(window.firebaseDb, `rooms/${room}/boats/${boatName}`),
+          { lat, lng, t: Date.now() }
+        );
+      }
     }
 
     function onError(err){ console.warn('Geolocation error:', err); statusEl.textContent='Error'; toast(err.message||'Location error'); if(err.code===1) toast('Enable: Settings > Safari > Location'); }
@@ -193,44 +202,65 @@
     function endTracking(){ if(watchId!=null){ navigator.geolocation.clearWatch(watchId); watchId=null; } if(wakeLock){ wakeLock.release(); wakeLock=null; } statusEl.textContent='Ended'; startBtn.disabled=true; pauseBtn.disabled=true; endBtn.disabled=true; toast('Ended'); }
     function clearTrack(){ path=[]; metersTotal=0; polyline.setLatLngs([]); pointsEl.textContent='0'; distanceEl.textContent=kmFormat(0); statusEl.textContent=started?'Tracking':'Idle'; toast('Track cleared'); }
 
+    let autoCenter=true, watchId=null;
+    const centerBtn=document.getElementById('centerBtn');
     centerBtn.addEventListener('click', ()=>{ autoCenter=!autoCenter; centerBtn.textContent = autoCenter? '🎯 Center':'🧭 Free Pan'; if(autoCenter && path.length){ const last=path[path.length-1]; map.panTo([last.lat,last.lng]); } });
-    startBtn.addEventListener('click', startTracking); pauseBtn.addEventListener('click', pauseTracking); clearBtn.addEventListener('click', clearTrack); endBtn.addEventListener('click', endTracking);
-    sampleInput.addEventListener('input', ()=> sampleLabel.textContent=`${sampleInput.value} s`); accInput.addEventListener('input', ()=> accLabel.textContent=`≤ ${accInput.value} m`); darkToggle.addEventListener('change', ()=>{ document.documentElement.style.colorScheme = darkToggle.checked? 'dark':'light'; });
+    document.getElementById('startBtn').addEventListener('click', startTracking);
+    document.getElementById('pauseBtn').addEventListener('click', pauseTracking);
+    document.getElementById('clearBtn').addEventListener('click', clearTrack);
+    document.getElementById('endBtn').addEventListener('click', endTracking);
+    document.getElementById('sampleInput').addEventListener('input', ()=> document.getElementById('sampleLabel').textContent=`${sampleInput.value} s`);
+    document.getElementById('accInput').addEventListener('input', ()=> document.getElementById('accLabel').textContent=`≤ ${accInput.value} m`);
+    document.getElementById('darkToggle').addEventListener('change', ()=>{ document.documentElement.style.colorScheme = darkToggle.checked? 'dark':'light'; });
 
     // Marks + VMG
+    const dropMarkBtn=document.getElementById('dropMarkBtn'), clearMarksBtn=document.getElementById('clearMarksBtn');
+    let marks=[]; const vmgRow=document.getElementById('vmgRow'), vmgEl=document.getElementById('vmg'), rangeEl=document.getElementById('range');
     function dropMark(latlng){ const m=L.marker(latlng,{draggable:true}).addTo(map).bindPopup('Race mark'); m.on('dragend', updateVMG); marks.push(m); vmgRow.style.display='block'; updateVMG(); toast('Mark placed'); }
     dropMarkBtn.addEventListener('click', ()=>{ const last=path[path.length-1]; if(last) dropMark([last.lat,last.lng]); else toast('Move a bit first'); });
     clearMarksBtn.addEventListener('click', ()=>{ marks.forEach(m=>m.remove()); marks=[]; vmgRow.style.display='none'; });
-
     function updateVMG(){ if(!marks.length||!path.length) return; const me=path[path.length-1]; const tgt=marks[0].getLatLng(); const rng=distance([me.lat,me.lng],[tgt.lat,tgt.lng]); const brg=(function(a,b){ const toRad=x=>x*Math.PI/180, toDeg=x=>x*180/Math.PI; const φ1=toRad(a.lat), φ2=toRad(b.lat), λ1=toRad(a.lng), λ2=toRad(b.lng); const y=Math.sin(λ2-λ1)*Math.cos(φ2); const x=Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(λ2-λ1); return (toDeg(Math.atan2(y,x))+360)%360; })({lat:me.lat,lng:me.lng},{lat:tgt.lat,lng:tgt.lng}); const spd=smoothSpeed(me.spd??null)||0; const hdg=smoothHeading(me.hdg??null)||0; const angle=Math.abs(((brg-hdg+540)%360)-180)*(Math.PI/180); const vmg=spd*Math.cos(angle); vmgEl.textContent=`${(vmg*1.943844).toFixed(1)} kn`; rangeEl.textContent=`${(rng/1852).toFixed(2)} NM`; }
 
-    function toGPX(trk){ const esc=s=>s.toString(); const gpxPts=trk.map(p=>`<trkpt lat="${esc(p.lat)}" lon="${esc(p.lng)}"><time>${new Date(p.t).toISOString()}</time></trkpt>`).join(''); return `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="Sailtrack MVP" xmlns="http://www.topografix.com/GPX/1/1">
-  <trk>
-    <name>Sailtrack Session</name>
-    <trkseg>
-      ${gpxPts}
-    </trkseg>
-  </trk>
-</gpx>`; }
-    exportBtn.addEventListener('click', ()=>{ if(!path.length){ toast('No points to export yet'); return; } const blob=new Blob([toGPX(path)],{type:'application/gpx+xml'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='sailtrack.gpx'; a.click(); URL.revokeObjectURL(url); });
+    // GPX export
+    function toGPX(trk){ const esc=s=>s.toString(); const gpxPts=trk.map(p=>`<trkpt lat="${esc(p.lat)}" lon="${esc(p.lng)}"><time>${new Date(p.t).toISOString()}</time></trkpt>`).join(''); return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Sailtrack MVP" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk>\n    <name>Sailtrack Session</name>\n    <trkseg>\n      ${gpxPts}\n    </trkseg>\n  </trk>\n</gpx>`; }
+    document.getElementById('exportBtn').addEventListener('click', ()=>{ if(!path.length){ toast('No points to export yet'); return; } const blob=new Blob([toGPX(path)],{type:'application/gpx+xml'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='sailtrack.gpx'; a.click(); URL.revokeObjectURL(url); });
 
-    map.on('click', ()=> centerBtn.click()); if(location.protocol!=='https:' && location.hostname!=='localhost'){ toast('For iPhone GPS, host over HTTPS.'); }
+    map.on('click', ()=> document.getElementById('centerBtn').click());
+    if(location.protocol!=='https:' && location.hostname!=='localhost'){ toast('For iPhone GPS, host over HTTPS.'); }
 
     // Listen for peers in the same room and draw them
     if(window.firebaseDb){
-      window.firebaseOnValue(window.firebaseRef(window.firebaseDb, `rooms/${room}/boats`), (snapshot)=>{
-        const data=snapshot.val()||{}; const names=Object.keys(data); peersEl.textContent = Math.max(0, names.length - 1); // exclude me
-        for(const [name, boat] of Object.entries(data)){
-          if(!boat||typeof boat.lat!=="number"||typeof boat.lng!=="number") continue; if(name===boatName) continue;
-          const latlng=[boat.lat, boat.lng]; const col=colorForName(name);
-          if(!otherBoats[name]){
-            otherBoats[name]={ marker:L.circleMarker(latlng,{radius:6,color:col,weight:3,fillOpacity:1}).addTo(map).bindTooltip(name,{permanent:true,offset:[8,0]}), path:L.polyline([latlng],{color:col,weight:3,opacity:.85}).addTo(map) };
-          } else {
-            otherBoats[name].marker.setLatLng(latlng); otherBoats[name].path.addLatLng(latlng);
+      window.firebaseOnValue(
+        window.firebaseRef(window.firebaseDb, `rooms/${room}/boats`),
+        (snapshot) => {
+          const data = snapshot.val() || {};
+          const names = Object.keys(data);
+          // peers = other boats in the room
+          peersEl.textContent = Math.max(0, names.filter(n => n !== boatName).length);
+
+          for (const name of names) {
+            if (name === boatName) continue;
+            const b = data[name] || {};
+            const lat = Number(b.lat);
+            const lng = Number(b.lng);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
+            const latlng = [lat, lng];
+            const col = colorForName(name);
+
+            if (!otherBoats[name]) {
+              otherBoats[name] = {
+                marker: L.circleMarker(latlng, { radius: 6, color: col, weight: 3, fillOpacity: 1 })
+                   .addTo(map).bindTooltip(name, { permanent: true, offset: [8, 0] }),
+                path: L.polyline([latlng], { color: col, weight: 3, opacity: 0.85 }).addTo(map)
+              };
+            } else {
+              otherBoats[name].marker.setLatLng(latlng);
+              otherBoats[name].path.addLatLng(latlng);
+            }
           }
         }
-      });
+      );
     }
   </script>
 </body>
