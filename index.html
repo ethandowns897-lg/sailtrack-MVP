@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Sailtrack MVP – Live Tracker (v3.1 – Multi-Boat + Mobile)</title>
+  <title>Sailtrack MVP – Live Tracker (v3.1.1)</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     :root{
@@ -15,7 +15,7 @@
     }
     html, body, #map { height: 100%; margin: 0; background: var(--bg); color: var(--text); }
 
-    /* Controls -> bottom sheet on phones */
+    /* Controls (become a bottom sheet on phones) */
     .controls {
       position: absolute; z-index: 1000; top: 10px; left: 10px;
       background: var(--panel); box-shadow: 0 6px 20px rgba(0,0,0,.25);
@@ -25,8 +25,7 @@
     }
     @media (max-width: 600px){
       .controls { left: 50%; transform: translateX(-50%); bottom: 12px; top: auto; width: 95vw; max-height: 45vh; border-radius: 16px; }
-      body.controls-collapsed .controls{ display:none; }
-      .fab { display:flex; }
+      body.controls-collapsed .controls { display:none; }
     }
 
     .row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
@@ -46,10 +45,12 @@
     label.switch{display:flex; align-items:center; gap:8px; font-size:13px}
     .pill{padding:2px 8px;border-radius:999px;background:var(--soft)}
 
-    /* Floating action button to toggle controls on mobile */
-    .fab{ position: absolute; z-index:1001; right: 14px; bottom: 14px; width: 56px; height: 56px;
-      border-radius: 50%; display:none; align-items:center; justify-content:center; font-size:22px;
-      background:#111; color:#fff; box-shadow:0 10px 24px rgba(0,0,0,.25); }
+    /* Floating action button — always visible */
+    .fab{
+      position: absolute; z-index:1001; right: 14px; bottom: 14px; width: 56px; height: 56px;
+      border-radius: 50%; display:flex; align-items:center; justify-content:center; font-size:22px;
+      background:#111; color:#fff; box-shadow:0 10px 24px rgba(0,0,0,.25);
+    }
   </style>
 </head>
 <body class="controls-collapsed">
@@ -137,8 +138,10 @@
     // Icons & geometry
     const svg = encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'><defs><radialGradient id='g' cx='50%' cy='40%' r='50%'><stop offset='0%' stop-color='#7dd3fc'/><stop offset='100%' stop-color='#0ea5e9'/></radialGradient></defs><circle cx='32' cy='32' r='31' fill='url(#g)' stroke='white' stroke-width='2'/><circle cx='32' cy='25' r='10' fill='white'/><path d='M12 55c4-12 15-16 20-16s16 4 20 16' fill='white'/></svg>`);
     const profileIcon = L.icon({ iconUrl: `data:image/svg+xml;charset=UTF-8,${svg}`, iconSize: [44, 44], iconAnchor: [22, 22], className: 'profile' });
-    let marker=null, accuracyCircle=null; let polyline=L.polyline([], { color:getCSS('--trail')||'red', weight:4, opacity:.9 }).addTo(map);
-    let path=[]; let metersTotal=0; let watchId=null; let autoCenter=true; let started=false;
+    let marker=null, accuracyCircle=null;
+    let polyline=L.polyline([], { color:getCSS('--trail')||'red', weight:4, opacity:.9 }).addTo(map);
+    let path=[]; let metersTotal=0; let autoCenter=true; let started=false;
+    let watchId=null; // single declaration
 
     // Multi-boat & rooms
     const otherBoats={}; function colorForName(name){ let h=0; for(let i=0;i<name.length;i++){ h=(h<<5)-h+name.charCodeAt(i); h|=0; } const hue=Math.abs(h)%360; return `hsl(${hue} 90% 50%)`; }
@@ -152,8 +155,10 @@
     const sampleInput=document.getElementById('sampleInput'), sampleLabel=document.getElementById('sampleLabel'), accInput=document.getElementById('accInput'), accLabel=document.getElementById('accLabel'), batteryMode=document.getElementById('batteryMode'), darkToggle=document.getElementById('darkToggle');
     const dropMarkBtn=document.getElementById('dropMarkBtn'), clearMarksBtn=document.getElementById('clearMarksBtn'); let marks=[];
 
-    // Mobile: toggle controls via FAB
-    const fab=document.getElementById('fab'); fab.addEventListener('click', ()=>{ document.body.classList.toggle('controls-collapsed'); fab.textContent = document.body.classList.contains('controls-collapsed') ? '⚙️' : '✖️'; });
+    // Mobile: toggle controls via FAB (always visible)
+    const fab=document.getElementById('fab');
+    fab.addEventListener('click', ()=>{ document.body.classList.toggle('controls-collapsed'); fab.textContent = document.body.classList.contains('controls-collapsed') ? '⚙️' : '✖️'; });
+    // Start with panel hidden on mobile
     if (/iPhone|Android/i.test(navigator.userAgent)) { document.body.classList.add('controls-collapsed'); }
 
     function toast(msg){ toastEl.textContent=msg; toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'), 1800); }
@@ -197,25 +202,31 @@
     function onError(err){ console.warn('Geolocation error:', err); statusEl.textContent='Error'; toast(err.message||'Location error'); if(err.code===1) toast('Enable: Settings > Safari > Location'); }
 
     // Tracking lifecycle
-    let throttleTimer=0; function startTracking(){ if(!('geolocation' in navigator)){ toast('Geolocation not supported'); return; } if(watchId!=null) return; started=true; statusEl.textContent='Requesting permission…'; requestWakeLock(); const intervalMs=Number(sampleInput.value)*1000; throttleTimer=Date.now(); watchId=navigator.geolocation.watchPosition((pos)=>{ const now=Date.now(); if(now-throttleTimer<intervalMs) return; throttleTimer=now; onPosition(pos); }, onError, { enableHighAccuracy: !batteryMode.checked, maximumAge: batteryMode.checked?5000:1000, timeout:10000 }); startBtn.disabled=true; pauseBtn.disabled=false; endBtn.disabled=false; toast('Tracking started'); }
+    let throttleTimer=0;
+    function startTracking(){
+      if(!('geolocation' in navigator)){ toast('Geolocation not supported'); return; }
+      if(watchId!=null) return;
+      started=true; statusEl.textContent='Requesting permission…'; requestWakeLock();
+      const intervalMs=Number(sampleInput.value)*1000; throttleTimer=Date.now();
+      watchId=navigator.geolocation.watchPosition((pos)=>{
+        const now=Date.now(); if(now-throttleTimer<intervalMs) return; throttleTimer=now; onPosition(pos);
+      }, onError, { enableHighAccuracy: !batteryMode.checked, maximumAge: batteryMode.checked?5000:1000, timeout:10000 });
+      startBtn.disabled=true; pauseBtn.disabled=false; endBtn.disabled=false; toast('Tracking started');
+    }
     function pauseTracking(){ if(watchId!=null){ navigator.geolocation.clearWatch(watchId); watchId=null; statusEl.textContent='Paused'; startBtn.disabled=false; pauseBtn.disabled=true; toast('Paused'); } }
     function endTracking(){ if(watchId!=null){ navigator.geolocation.clearWatch(watchId); watchId=null; } if(wakeLock){ wakeLock.release(); wakeLock=null; } statusEl.textContent='Ended'; startBtn.disabled=true; pauseBtn.disabled=true; endBtn.disabled=true; toast('Ended'); }
     function clearTrack(){ path=[]; metersTotal=0; polyline.setLatLngs([]); pointsEl.textContent='0'; distanceEl.textContent=kmFormat(0); statusEl.textContent=started?'Tracking':'Idle'; toast('Track cleared'); }
 
-    let autoCenter=true, watchId=null;
-    const centerBtn=document.getElementById('centerBtn');
     centerBtn.addEventListener('click', ()=>{ autoCenter=!autoCenter; centerBtn.textContent = autoCenter? '🎯 Center':'🧭 Free Pan'; if(autoCenter && path.length){ const last=path[path.length-1]; map.panTo([last.lat,last.lng]); } });
-    document.getElementById('startBtn').addEventListener('click', startTracking);
-    document.getElementById('pauseBtn').addEventListener('click', pauseTracking);
-    document.getElementById('clearBtn').addEventListener('click', clearTrack);
-    document.getElementById('endBtn').addEventListener('click', endTracking);
-    document.getElementById('sampleInput').addEventListener('input', ()=> document.getElementById('sampleLabel').textContent=`${sampleInput.value} s`);
-    document.getElementById('accInput').addEventListener('input', ()=> document.getElementById('accLabel').textContent=`≤ ${accInput.value} m`);
-    document.getElementById('darkToggle').addEventListener('change', ()=>{ document.documentElement.style.colorScheme = darkToggle.checked? 'dark':'light'; });
+    startBtn.addEventListener('click', startTracking);
+    pauseBtn.addEventListener('click', pauseTracking);
+    clearBtn.addEventListener('click', clearTrack);
+    endBtn.addEventListener('click', endTracking);
+    sampleInput.addEventListener('input', ()=> sampleLabel.textContent=`${sampleInput.value} s`);
+    accInput.addEventListener('input', ()=> accLabel.textContent=`≤ ${accInput.value} m`);
+    darkToggle.addEventListener('change', ()=>{ document.documentElement.style.colorScheme = darkToggle.checked? 'dark':'light'; });
 
     // Marks + VMG
-    const dropMarkBtn=document.getElementById('dropMarkBtn'), clearMarksBtn=document.getElementById('clearMarksBtn');
-    let marks=[]; const vmgRow=document.getElementById('vmgRow'), vmgEl=document.getElementById('vmg'), rangeEl=document.getElementById('range');
     function dropMark(latlng){ const m=L.marker(latlng,{draggable:true}).addTo(map).bindPopup('Race mark'); m.on('dragend', updateVMG); marks.push(m); vmgRow.style.display='block'; updateVMG(); toast('Mark placed'); }
     dropMarkBtn.addEventListener('click', ()=>{ const last=path[path.length-1]; if(last) dropMark([last.lat,last.lng]); else toast('Move a bit first'); });
     clearMarksBtn.addEventListener('click', ()=>{ marks.forEach(m=>m.remove()); marks=[]; vmgRow.style.display='none'; });
@@ -223,9 +234,9 @@
 
     // GPX export
     function toGPX(trk){ const esc=s=>s.toString(); const gpxPts=trk.map(p=>`<trkpt lat="${esc(p.lat)}" lon="${esc(p.lng)}"><time>${new Date(p.t).toISOString()}</time></trkpt>`).join(''); return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Sailtrack MVP" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk>\n    <name>Sailtrack Session</name>\n    <trkseg>\n      ${gpxPts}\n    </trkseg>\n  </trk>\n</gpx>`; }
-    document.getElementById('exportBtn').addEventListener('click', ()=>{ if(!path.length){ toast('No points to export yet'); return; } const blob=new Blob([toGPX(path)],{type:'application/gpx+xml'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='sailtrack.gpx'; a.click(); URL.revokeObjectURL(url); });
+    exportBtn.addEventListener('click', ()=>{ if(!path.length){ toast('No points to export yet'); return; } const blob=new Blob([toGPX(path)],{type:'application/gpx+xml'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='sailtrack.gpx'; a.click(); URL.revokeObjectURL(url); });
 
-    map.on('click', ()=> document.getElementById('centerBtn').click());
+    map.on('click', ()=> centerBtn.click());
     if(location.protocol!=='https:' && location.hostname!=='localhost'){ toast('For iPhone GPS, host over HTTPS.'); }
 
     // Listen for peers in the same room and draw them
@@ -235,7 +246,6 @@
         (snapshot) => {
           const data = snapshot.val() || {};
           const names = Object.keys(data);
-          // peers = other boats in the room
           peersEl.textContent = Math.max(0, names.filter(n => n !== boatName).length);
 
           for (const name of names) {
@@ -251,7 +261,7 @@
             if (!otherBoats[name]) {
               otherBoats[name] = {
                 marker: L.circleMarker(latlng, { radius: 6, color: col, weight: 3, fillOpacity: 1 })
-                   .addTo(map).bindTooltip(name, { permanent: true, offset: [8, 0] }),
+                  .addTo(map).bindTooltip(name, { permanent: true, offset: [8, 0] }),
                 path: L.polyline([latlng], { color: col, weight: 3, opacity: 0.85 }).addTo(map)
               };
             } else {
