@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Sailtrack MVP – Live Tracker (v3.1.1)</title>
+  <title>Sailtrack MVP – Live Tracker (v3.2)</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     :root{
@@ -15,7 +15,7 @@
     }
     html, body, #map { height: 100%; margin: 0; background: var(--bg); color: var(--text); }
 
-    /* Controls (become a bottom sheet on phones) */
+    /* Controls (bottom sheet on phones) */
     .controls {
       position: absolute; z-index: 1000; top: 10px; left: 10px;
       background: var(--panel); box-shadow: 0 6px 20px rgba(0,0,0,.25);
@@ -158,19 +158,40 @@
     // Mobile: toggle controls via FAB (always visible)
     const fab=document.getElementById('fab');
     fab.addEventListener('click', ()=>{ document.body.classList.toggle('controls-collapsed'); fab.textContent = document.body.classList.contains('controls-collapsed') ? '⚙️' : '✖️'; });
-    // Start with panel hidden on mobile
     if (/iPhone|Android/i.test(navigator.userAgent)) { document.body.classList.add('controls-collapsed'); }
 
     function toast(msg){ toastEl.textContent=msg; toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'), 1800); }
     function kmFormat(m){ return (m/1000).toFixed(2)+' km'; }
     function knotsFromMps(v){ return (v*1.943844).toFixed(1)+' kn'; }
-    function bearingToCardinal(b){ if(b==null||isNaN(b)) return '–'; const d=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW']; const i=Math.round(b/22.5)%16; return `${d[i]} (${Math.round(b)}°)`; }
+    function bearingToCardinal(b){ if(b==null||isNaN(b)) return '–'; const d=['N','NNE','NE','ENE','E','ESE','SE','S','SSW','SW','WSW','W','WNW','NW','NNW']; const i=Math.round(b/22.5)%16; return `${d[i]} (${Math.round(b)}°)`; }
     function getCSS(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
     function distance(a,b){ return map.distance(a,b); }
 
     // Smoothing
     function smoothHeading(raw){ const N=5, pts=path.slice(-N); if(pts.length<2) return raw; const angs=pts.map(p=>p.hdg).filter(x=>typeof x==='number'); if(!angs.length) return raw; return angs.reduce((a,b)=>a+b,0)/angs.length; }
     function smoothSpeed(raw){ const N=5, pts=path.slice(-N); if(pts.length<2) return raw; const sp=pts.map(p=>p.spd).filter(x=>typeof x==='number'); if(!sp.length) return raw; return sp.reduce((a,b)=>a+b,0)/sp.length; }
+
+    // --- DESKTOP PERMISSION HELPERS ---
+    async function ensureGeoPermission() {
+      try {
+        if (!('permissions' in navigator)) return;
+        const status = await navigator.permissions.query({ name: 'geolocation' });
+        if (status.state === 'denied') {
+          toast('Location blocked. Click the lock icon → Site settings → Allow location.');
+        }
+      } catch (e) { /* ignore */ }
+    }
+    function requestOneFix() {
+      return new Promise((resolve, reject) => {
+        if (!('geolocation' in navigator)) return reject(new Error('Geolocation not supported'));
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve(pos),
+          (err) => reject(err),
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+        );
+      });
+    }
+    // --- END HELPERS ---
 
     function addPoint(lat,lng,t,spd,hdg){
       const last=path[path.length-1];
@@ -199,19 +220,54 @@
       }
     }
 
-    function onError(err){ console.warn('Geolocation error:', err); statusEl.textContent='Error'; toast(err.message||'Location error'); if(err.code===1) toast('Enable: Settings > Safari > Location'); }
+    function onError(err, fromWatch=false){
+      console.warn('Geolocation error:', err);
+      statusEl.textContent='Error';
+      const msg = err && err.message ? err.message : 'Location error';
+      toast(msg);
+      if (err && err.code === 1) { // PERMISSION_DENIED
+        toast('Location blocked. Click the lock icon → Site settings → Allow location.');
+        startBtn.disabled = false;
+        pauseBtn.disabled = true;
+        endBtn.disabled = true;
+        if (fromWatch && watchId != null) {
+          navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+        }
+      }
+    }
 
     // Tracking lifecycle
     let throttleTimer=0;
-    function startTracking(){
+    async function startTracking(){
       if(!('geolocation' in navigator)){ toast('Geolocation not supported'); return; }
       if(watchId!=null) return;
-      started=true; statusEl.textContent='Requesting permission…'; requestWakeLock();
+
+      started = true;
+      statusEl.textContent = 'Requesting permission…';
+      await ensureGeoPermission();
+
+      try { await requestOneFix(); } catch (e) {
+        console.log('One-shot location failed:', e);
+      }
+
+      requestWakeLock();
       const intervalMs=Number(sampleInput.value)*1000; throttleTimer=Date.now();
-      watchId=navigator.geolocation.watchPosition((pos)=>{
-        const now=Date.now(); if(now-throttleTimer<intervalMs) return; throttleTimer=now; onPosition(pos);
-      }, onError, { enableHighAccuracy: !batteryMode.checked, maximumAge: batteryMode.checked?5000:1000, timeout:10000 });
-      startBtn.disabled=true; pauseBtn.disabled=false; endBtn.disabled=false; toast('Tracking started');
+
+      try {
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            const now=Date.now(); if(now-throttleTimer<intervalMs) return; throttleTimer=now; onPosition(pos);
+          },
+          (err) => { onError(err, /*fromWatch*/true); },
+          { enableHighAccuracy: !batteryMode.checked, maximumAge: batteryMode.checked?5000:1000, timeout:10000 }
+        );
+        startBtn.disabled=true; pauseBtn.disabled=false; endBtn.disabled=false; toast('Tracking started');
+      } catch (e) {
+        console.error('watchPosition error', e);
+        toast('Could not start tracking');
+        startBtn.disabled=false; pauseBtn.disabled=true; endBtn.disabled=true;
+      }
     }
     function pauseTracking(){ if(watchId!=null){ navigator.geolocation.clearWatch(watchId); watchId=null; statusEl.textContent='Paused'; startBtn.disabled=false; pauseBtn.disabled=true; toast('Paused'); } }
     function endTracking(){ if(watchId!=null){ navigator.geolocation.clearWatch(watchId); watchId=null; } if(wakeLock){ wakeLock.release(); wakeLock=null; } statusEl.textContent='Ended'; startBtn.disabled=true; pauseBtn.disabled=true; endBtn.disabled=true; toast('Ended'); }
