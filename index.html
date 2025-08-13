@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Sailtrack MVP – Live Tracker (v3.2)</title>
+  <title>Sailtrack MVP – Live Tracker (v3.2.1)</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     :root{
@@ -23,9 +23,11 @@
       display: grid; gap: 8px; width: min(92vw, 360px);
       max-height: 80vh; overflow: auto;
     }
+    /* Allow gear to toggle on ALL screen sizes */
+    body.controls-collapsed .controls { display:none; }
+
     @media (max-width: 600px){
       .controls { left: 50%; transform: translateX(-50%); bottom: 12px; top: auto; width: 95vw; max-height: 45vh; border-radius: 16px; }
-      body.controls-collapsed .controls { display:none; }
     }
 
     .row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
@@ -53,9 +55,9 @@
     }
   </style>
 </head>
-<body class="controls-collapsed">
+<body>
   <div id="map"></div>
-  <button id="fab" class="fab" title="Show controls">⚙️</button>
+  <button id="fab" class="fab" title="Show/hide controls">⚙️</button>
 
   <!-- Controls -->
   <div class="controls">
@@ -92,7 +94,7 @@
       <div><span class="badge">Speed</span> <span id="speed">–</span> · <span class="badge">Heading</span> <span id="heading">–</span></div>
       <div id="vmgRow" style="display:none"><span class="badge">VMG→Mark</span> <span id="vmg">–</span> · <span class="badge">Range</span> <span id="range">–</span></div>
       <div><span class="badge">Peers</span> <span id="peers">0</span></div>
-      <div class="hint">Tip: tap ⚙️ to show/hide this panel on iPhone.</div>
+      <div class="hint">Tip: click ⚙️ to show/hide this panel. If Start gets stuck, allow Location via the 🔒 icon in your browser.</div>
     </div>
   </div>
 
@@ -155,12 +157,13 @@
     const sampleInput=document.getElementById('sampleInput'), sampleLabel=document.getElementById('sampleLabel'), accInput=document.getElementById('accInput'), accLabel=document.getElementById('accLabel'), batteryMode=document.getElementById('batteryMode'), darkToggle=document.getElementById('darkToggle');
     const dropMarkBtn=document.getElementById('dropMarkBtn'), clearMarksBtn=document.getElementById('clearMarksBtn'); let marks=[];
 
-    // Mobile: toggle controls via FAB (always visible)
+    // Gear toggles panel on ALL devices
     const fab=document.getElementById('fab');
     fab.addEventListener('click', ()=>{ document.body.classList.toggle('controls-collapsed'); fab.textContent = document.body.classList.contains('controls-collapsed') ? '⚙️' : '✖️'; });
+    // Auto-start collapsed on mobile only
     if (/iPhone|Android/i.test(navigator.userAgent)) { document.body.classList.add('controls-collapsed'); }
 
-    function toast(msg){ toastEl.textContent=msg; toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'), 1800); }
+    function toast(msg){ toastEl.textContent=msg; toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'), 2200); }
     function kmFormat(m){ return (m/1000).toFixed(2)+' km'; }
     function knotsFromMps(v){ return (v*1.943844).toFixed(1)+' kn'; }
     function bearingToCardinal(b){ if(b==null||isNaN(b)) return '–'; const d=['N','NNE','NE','ENE','E','ESE','SE','S','SSW','SW','WSW','W','WNW','NW','NNW']; const i=Math.round(b/22.5)%16; return `${d[i]} (${Math.round(b)}°)`; }
@@ -171,13 +174,13 @@
     function smoothHeading(raw){ const N=5, pts=path.slice(-N); if(pts.length<2) return raw; const angs=pts.map(p=>p.hdg).filter(x=>typeof x==='number'); if(!angs.length) return raw; return angs.reduce((a,b)=>a+b,0)/angs.length; }
     function smoothSpeed(raw){ const N=5, pts=path.slice(-N); if(pts.length<2) return raw; const sp=pts.map(p=>p.spd).filter(x=>typeof x==='number'); if(!sp.length) return raw; return sp.reduce((a,b)=>a+b,0)/sp.length; }
 
-    // --- DESKTOP PERMISSION HELPERS ---
+    // --- DESKTOP PERMISSION HELPERS (non-blocking) ---
     async function ensureGeoPermission() {
       try {
         if (!('permissions' in navigator)) return;
         const status = await navigator.permissions.query({ name: 'geolocation' });
         if (status.state === 'denied') {
-          toast('Location blocked. Click the lock icon → Site settings → Allow location.');
+          toast('Location blocked. Click the 🔒 icon → Site settings → Location: Allow.');
         }
       } catch (e) { /* ignore */ }
     }
@@ -226,7 +229,7 @@
       const msg = err && err.message ? err.message : 'Location error';
       toast(msg);
       if (err && err.code === 1) { // PERMISSION_DENIED
-        toast('Location blocked. Click the lock icon → Site settings → Allow location.');
+        toast('Location blocked. Click the 🔒 icon → Site settings → Location: Allow.');
         startBtn.disabled = false;
         pauseBtn.disabled = true;
         endBtn.disabled = true;
@@ -247,7 +250,8 @@
       statusEl.textContent = 'Requesting permission…';
       await ensureGeoPermission();
 
-      try { await requestOneFix(); } catch (e) {
+      // Nudge prompt, but don't block UI: race with a very short timeout
+      try { await Promise.race([ requestOneFix(), new Promise(res=>setTimeout(res, 1500)) ]); } catch (e) {
         console.log('One-shot location failed:', e);
       }
 
